@@ -1,0 +1,468 @@
+---
+title: "NBA Style of Play"
+author: "Carter Erickson"
+date: "12/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(glmnet)
+library(dplyr)
+library(rvest)
+library(corrplot)
+library(ggplot2)
+library(cluster)
+library(fpc)
+library(pvclust)
+library(mclust)
+library(tidyverse)
+library(bestglm)
+library(car)
+library(Rcpp)
+library(reactable)
+library(webshot)
+library(webshot2)
+```
+
+## Importing Data
+
+```{r}
+##### per game stats (FGA, 3PA, RB, AST, STL, BLK, TOV)
+per_game_url = "https://www.basketball-reference.com/leagues/NBA_2021.html"
+
+per_game_page = per_game_url %>% 
+  rvest::read_html()
+
+per_game_df = per_game_page %>% 
+  rvest::html_nodes("table") %>% 
+  .[7] %>% 
+  rvest::html_table(fill = TRUE)
+
+
+#### advanced team stats
+per_game_url = "https://www.basketball-reference.com/leagues/NBA_2021.html"
+
+per_game_page = per_game_url %>% 
+  rvest::read_html()
+
+adv_game_df = per_game_page %>% 
+  rvest::html_nodes("table") %>% 
+  .[11] %>% 
+  rvest::html_table(fill = TRUE)
+
+
+#### advanced scoring stats
+scoring_adv = read.csv("/Users/cartererickson/Desktop/School/STAT/STAT 495R/pbpstats_export.csv", sep = ",")
+scoring_adv = scoring_adv[order(scoring_adv$Name),]
+
+
+#### advanced assist stats
+assist_adv = read.csv("/Users/cartererickson/Desktop/School/STAT/STAT 495R/pbpstats_export_assists.csv", sep = ",")
+assist_adv = assist_adv[order(assist_adv$Name), ]
+
+
+#### shot distribution
+shot_dist = read.csv("/Users/cartererickson/Desktop/School/STAT/STAT 495R/pbpstats_export_shotdist.csv", sep = ",")
+shot_dist = shot_dist[order(shot_dist$Name),]
+
+
+#### misc/pace
+pace_adv = read.csv("/Users/cartererickson/Desktop/School/STAT/STAT 495R/pbpstats_export_pace.csv", sep = ",")
+
+
+#### rebounds
+rebound_adv = read.csv("/Users/cartererickson/Desktop/School/STAT/STAT 495R/pbpstats_export_rebounds.csv", sep = ",")
+```
+
+## Cleaning Data
+
+```{r}
+##### per game stats (FGA, 3PA, RB, AST, STL, BLK, TOV)
+bref_per_game = select(per_game_df[[1]], -c(Rk, G, MP, FG, 'FG%', '3P','3P%', 
+                                            '2P','2P%', FT, 'FT%', PF, PTS))
+bref_per_game$PlayoffFlag = ifelse(grepl("\\*", bref_per_game$Team), 1, 0)
+bref_per_game$Team = sub("\\*", "", bref_per_game$Team)
+bref_per_game = bref_per_game[-31, ]
+bref_per_game = rename(bref_per_game, Franchise = Team)
+
+
+#### advanced team stats
+colnames(adv_game_df[[1]]) = c("Rk", "Team", "Age", "W", "L", "PW", "PL", 
+                               "MOV", "SOS", "SRS", "ORtg", "DRtg", "NRtg", 
+                               "Pace", "FTr", "3PAr", "TS%", "NA", "OeFG%",
+                               "OTOV%", "ORB%", "FT/FGA", "NA", "DeFG%", 
+                               "OppTOV%", "DRB%", "OppFT/FGA", "NA.1", "Arena", 
+                               "Attend.", "Attend./G")
+
+bref_adv_game = select(adv_game_df[[1]], -c(Rk, W, L, PW, PL, MOV, SOS, SRS, 
+                                            FTr, `TS%`, `NA`, NA.1, Arena,
+                                            Attend., `Attend./G` ))
+bref_adv_game = bref_adv_game[-1,]
+bref_adv_game = bref_adv_game[-31, ]
+bref_adv_game$Team = sub("\\*", "", bref_adv_game$Team)
+bref_adv_game = rename(bref_adv_game, Franchise = Team)
+
+# advanced scoring data
+scoring_adv = scoring_adv %>% 
+                dplyr::select(!c(GamesPlayed, FG2M, Fg2Pct, FG3M, Fg3Pct, 
+                                 NonHeaveFg3Pct, Assisted2sPct, 
+                                 NonPutbacksAssisted2sPct, Assisted3sPct, 
+                                 EfgPct, TsPct, Fg2aBlocked, FG2APctBlocked, 
+                                 Fg3aBlocked, FG3APctBlocked))
+
+# advanced assist data
+assist_adv = assist_adv %>% 
+              dplyr::select(!c(GamesPlayed))
+
+# shot distribution
+shot_dist = shot_dist %>% 
+              dplyr::select(!c(GamesPlayed, AtRimFGM, AtRimAccuracy, 
+                               UnblockedAtRimAccuracy, AtRimPctAssisted, 
+                               AtRimPctBlocked, ShortMidRangeFGM, 
+                               ShortMidRangeAccuracy, 
+                               UnblockedShortMidRangeAccuracy, 
+                               ShortMidRangePctAssisted, 
+                               ShortMidRangePctBlocked, LongMidRangeFGM, 
+                               LongMidRangeAccuracy, 
+                               UnblockedLongMidRangeAccuracy, 
+                               LongMidRangePctAssisted, 
+                               LongMidRangePctBlocked, Corner3FGM, 
+                               Corner3Accuracy, UnblockedCorner3Accuracy, 
+                               Corner3PctAssisted, Corner3PctBlocked, Arc3FGM, 
+                               Arc3Accuracy, UnblockedArc3Accuracy, 
+                               Arc3PctAssisted, Arc3PctBlocked, NonHeaveArc3FGM, 
+                               NonHeaveArc3Accuracy, HeaveAttempts, HeaveMakes))
+
+# misc/pace
+pace_adv = pace_adv %>% 
+  dplyr::select(!c(GamesPlayed, Blocked2s, Blocked3s, BlockedAtRim, 
+                   BlockedShortMidRange, BlockedLongMidRange, BlockedCorner3, 
+                   BlockedArc3, BlocksRecoveredPct, LostBallSteals,
+                   BadPassSteals, DefensiveGoaltends, FirstChancePoints, Pace))
+
+# rebounds
+rebound_adv = rebound_adv %>% 
+                dplyr::select(!c(GamesPlayed, FTDefRebounds, DefFTReboundPct, 
+                                 DefTwoPtRebounds, DefTwoPtReboundPct, 
+                                 DefThreePtRebounds, DefThreePtReboundPct, 
+                                 DefFGReboundPct, FTOffRebounds, 
+                                 OffFTReboundPct, OffTwoPtRebounds, 
+                                 OffTwoPtReboundPct, OffThreePtRebounds, 
+                                 OffThreePtReboundPct, OffFGReboundPct, 
+                                 DefAtRimReboundPct, DefShortMidRangeReboundPct, 
+                                 DefLongMidRangeReboundPct, 
+                                 DefArc3ReboundPct, DefCorner3ReboundPct, 
+                                 OffAtRimReboundPct, OffShortMidRangeReboundPct, 
+                                 OffLongMidRangeReboundPct, OffArc3ReboundPct, 
+                                 OffCorner3ReboundPct, SelfORebPct))
+```
+
+## Combining Data
+
+```{r}
+# Combining Basketball Reference data
+bref_all = bref_per_game %>%
+            dplyr::inner_join(bref_adv_game, by = "Franchise") %>%
+            dplyr::select(!c(PlayoffFlag))
+
+
+# Combining scoring, shot distribution, and assisting PBP data
+pbp_offense = scoring_adv %>%
+            dplyr::inner_join(assist_adv, by = "Name") %>%
+            dplyr::inner_join(shot_dist, by = "Name")
+
+# Combining Defense and Rebounding PBP data
+pbp_defense = pace_adv %>% 
+                dplyr::inner_join(rebound_adv, by = "Name")
+
+# Changing Basketball Reference form to data frame and changing row names
+bref_all = as.data.frame(bref_all)
+rownames(bref_all) = bref_all$Franchise
+bref_all = bref_all[,-c(1)]
+
+# Changing row names of PBP data
+rownames(pbp_offense) = pbp_offense$Name
+pbp_offense = pbp_offense[, -c(1)]
+
+rownames(pbp_defense) = pbp_defense$Name
+pbp_defense = pbp_defense[, -c(1)]
+
+# changing to numeric to allow for analysis to be performed
+bref_all[, c(1:25)] = sapply(bref_all[, c(1:25)], as.numeric)
+```
+
+## EDA
+
+```{r}
+# check for correlation to see how variables affect pace
+team_cor = cor(bref_all)
+corrplot(team_cor)
+
+# correlation matrix of pbp data
+pbp_offense_cor = cor(pbp_offense)
+corrplot(pbp_offense_cor)
+
+pbp_defense_cor = cor(pbp_defense)
+corrplot(pbp_defense_cor)
+
+# relationship between seconds per defensive possesion and defensive rebounds
+ggplot(aes(x=SecondsPerPossDef,y=DefRebounds),data=pbp_defense) +
+  geom_point()
+
+# Scatterplot matrix for all variables
+pairs(bref_all, horInd = 1:13, verInd = 1:13)
+pairs(bref_all, horInd = 13:25, verInd = 13:25)
+
+```
+
+
+## LASSO 1
+```{r}
+# get modeling matrix (remove intercept column because LASSO & RIDGE do that automatically)
+# basketball reference data
+brefX = model.matrix(NRtg ~ ., data = bref_all)[,-c(1)]
+
+lambda = exp(seq(-15, 15, length = 1000))
+lasso_lm = glmnet(brefX, bref_all$NRtg, alpha = 1, lambda = lambda)
+plot(lasso_lm)
+lasso_cv = cv.glmnet(brefX, bref_all$NRtg, alpha = 1, lambda = lambda)
+lbestlam = lasso_cv$lambda.min
+plot(lasso_cv)
+lcoefs = predict(lasso_lm, s = lbestlam, type = "coefficient")
+lvars = names(lcoefs[lcoefs[, 1]!=0, ])[-c(1)]
+
+regular_lm_lasso = lm(bref_all$NRtg ~ . , data = data.frame(brefX[, lvars]))
+regular_sumary_lasso = summary(regular_lm_lasso)
+
+cbind(lcoefs[lcoefs!=0], regular_sumary_lasso$coefficients)
+lcoefs
+
+# Removing variables recommended by LASSO and those I found unhelpful
+bref_final = bref_all %>% 
+              dplyr::select(!c(`2PA`, NRtg, `3PAr`, `OTOV%`,
+                               `FT/FGA`, `DeFG%`, `OppTOV%`, `ORB%`, `DRB%`,
+                               `OeFG%`, `OppFT/FGA`, Age))
+
+```
+
+## LASSO 2
+```{r}
+# get modeling matrix (remove intercept column because LASSO & RIDGE do that automatically)
+# basketball reference data
+pbpoX = model.matrix(OffPoss ~ ., data = pbp_offense)[,-c(1)]
+
+lambda = exp(seq(-15, 15, length = 1000))
+lasso_lm = glmnet(pbpoX, pbp_offense$OffPoss, alpha = 1, lambda = lambda)
+plot(lasso_lm)
+lasso_cv = cv.glmnet(pbpoX, pbp_offense$OffPoss, alpha = 1, lambda = lambda)
+lbestlam = lasso_cv$lambda.min
+plot(lasso_cv)
+lcoefs = predict(lasso_lm, s = lbestlam, type = "coefficient")
+lvars = names(lcoefs[lcoefs[, 1]!=0, ])[-c(1)]
+
+regular_lm_lasso = lm(pbp_offense$OffPoss ~ . , data = data.frame(pbpoX[, lvars]))
+regular_sumary_lasso = summary(regular_lm_lasso)
+
+cbind(lcoefs[lcoefs!=0], regular_sumary_lasso$coefficients)
+lcoefs
+
+# Removing variables recommended by LASSO
+pbpo_final = pbp_offense %>% 
+              dplyr::select(!c(Points, PtsAssisted2s, FG3APct, Assists, 
+                               AssistPoints, TwoPtAssists, LongMidRangeAssists, 
+                               Arc3Assists, NonHeaveArc3FGA, Corner3Frequency, 
+                               ShortMidRangeFrequency, LongMidRangeFrequency, 
+                               AtRimFrequency, Avg2ptShotDistance, 
+                               AtRimFG3AFrequency, ShotQualityAvg.y))
+
+pbpo_final = rename(pbpo_final, ShotQualityAvg = ShotQualityAvg.x)
+```
+
+
+## Cluster Analysis
+
+```{r}
+# Standardize variables
+scale_adv_game = scale(bref_final)
+scale_pbp_offense = scale(pbpo_final)
+scale_pbp_defense = scale(pbp_defense)
+
+
+# Determine number of clusters for Basketball Reference data
+wss = (nrow(scale_adv_game)-1)*sum(apply(scale_adv_game,2,var))
+  for (i in 2:25) wss[i] = sum(kmeans(scale_adv_game,
+                                     centers=i)$withinss)
+plot(1:25, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+# Determine number of clusters for PBP shot and assist data
+wss2 = (nrow(scale_pbp_offense)-1)*sum(apply(scale_pbp_offense,2,var))
+  for (i in 2:21) wss2[i] <- sum(kmeans(scale_pbp_offense,
+                                     centers=i)$withinss)
+plot(1:21, wss2, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+# Determine number of clusters for PBP rebound, pace, and shot dist data
+wss3 = (nrow(scale_pbp_defense)-1)*sum(apply(scale_pbp_defense,2,var))
+  for (i in 2:28) wss3[i] <- sum(kmeans(scale_pbp_defense,
+                                     centers=i)$withinss)
+plot(1:28, wss3, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+```
+
+## K-Means Cluster Analysis 1
+
+```{r}
+# K-Means Cluster Analysis for Basketball Reference data
+fit = kmeans(scale_adv_game, 6) # 6 cluster solution
+
+# get cluster means
+aggregate(scale_adv_game,by=list(fit$cluster),FUN=mean)
+
+# append cluster assignment
+clust_adv_game = data.frame(scale_adv_game, fit$cluster)
+
+# Cluster Plot against 1st 2 principal components
+# vary parameters for most readable graph
+clusplot(scale_adv_game, fit$cluster, color=TRUE, shade=TRUE,
+         labels=2, lines=0)
+
+```
+
+## K-Means Cluster Analysis 2
+
+```{r}
+# K-Means Cluster Analysis for PBP shot and assist data
+fit2 = kmeans(scale_pbp_offense, 6) # 6 cluster solution
+
+# get cluster means
+aggregate(scale_pbp_offense,by=list(fit2$cluster),FUN=mean)
+
+# append cluster assignment
+clust_pbp_offense = data.frame(scale_pbp_offense, fit2$cluster)
+
+# Cluster Plot against 1st 2 principal components
+# vary parameters for most readable graph
+clusplot(scale_pbp_offense, fit2$cluster, color=TRUE, shade=TRUE,
+         labels=2, lines=0)
+
+```
+
+## K-Means Cluster Analysis 3
+
+```{r}
+# K-Means Cluster Analysis for PBP rebounding, pace, and shot dist data
+fit3 = kmeans(scale_pbp_defense, 6) # 6 cluster solution
+
+# get cluster means
+aggregate(scale_pbp_defense,by=list(fit3$cluster),FUN=mean)
+
+# append cluster assignment
+clust_pbp_defense = data.frame(scale_pbp_defense, fit3$cluster)
+
+# Cluster Plot against 1st 2 principal components
+# vary parameters for most readable graph
+clusplot(scale_pbp_defense, fit3$cluster, color=TRUE, shade=TRUE,
+         labels=2, lines=0)
+
+```
+
+## Visualizing Clusters
+```{r}
+bref_final$Cluster = clust_adv_game$fit.cluster
+                              
+ggplot(clust_adv_game, aes(x=TOV, y=Pace, 
+                               shape = as.factor(fit.cluster), 
+                              color = as.factor(fit.cluster))) + 
+                          geom_point(size=2.5)
+
+bref_table = reactable(bref_final, searchable = TRUE, 
+          groupBy = "Cluster", 
+          columns = list(
+           FGA = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           `3PA` = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           FTA = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ORB = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           DRB = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           TRB = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           AST = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           STL = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           BLK = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           TOV = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ORtg = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           DRtg = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Pace = colDef(aggregate = "mean", format = colFormat(digits = 1))
+           )
+          )
+
+bref_table
+```
+
+```{r}
+pbpo_final$Cluster = clust_pbp_offense$fit2.cluster
+                              
+ggplot(clust_pbp_offense, aes(x=OffPoss, y=PtsAssisted3s, 
+                               shape = as.factor(fit2.cluster), 
+                              color = as.factor(fit2.cluster))) + 
+                          geom_point(size=2.5)
+
+reactable(pbpo_final, searchable = TRUE, 
+          groupBy = "Cluster",
+          columns = list(
+           OffPoss = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           FG2A = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           FG3A = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           FtPoints = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           PtsUnassisted2s = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           PtsAssisted3s = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           PtsUnassisted3s = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ShotQualityAvg = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           PtsPutbacks = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ThreePtAssists = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           AtRimAssists = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ShortMidRangeAssists = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Corner3Assists = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Avg3ptShotDistance = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           AtRimFGA = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           ShortMidRangeFGA = colDef(aggregate = "mean", format = colFormat(digits = 1)), 
+           LongMidRangeFGA = colDef(aggregate = "mean", format = colFormat(digits = 1)), 
+           Corner3FGA = colDef(aggregate = "mean", format = colFormat(digits = 1)), 
+           Arc3FGA = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Arc3Frequency = colDef(aggregate = "mean", format = colFormat(digits = 1))
+           )
+          )
+```
+
+```{r}
+pbp_defense$Cluster = clust_pbp_defense$fit3.cluster
+                              
+ggplot(clust_pbp_defense, aes(x=Blocks, y=SecondsPerPossDef, 
+                               shape = as.factor(fit3.cluster), 
+                              color = as.factor(fit3.cluster))) + 
+                          geom_point(size=2.5)
+
+reactable(pbp_defense, searchable = TRUE, 
+          groupBy = "Cluster",
+          columns = list(
+           SecondsPerPossOff = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           SecondsPerPossDef = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           SecondsExcludingORebsPerPossOff = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           SecondsExcludingORebsPerPossDef = colDef(aggregate = "mean", format = colFormat(digits = 1)), 
+           Blocks = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           RecoveredBlocks = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Steals = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           Rebounds = colDef(aggregate = "mean", format = colFormat(digits = 1)), 
+           DefRebounds = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           OffRebounds = colDef(aggregate = "mean", format = colFormat(digits = 1)),
+           SelfOReb = colDef(aggregate = "mean", format = colFormat(digits = 1))
+           )
+          )
+```
+
+
+
