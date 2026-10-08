@@ -15,7 +15,7 @@ Groups the 30 NBA teams from the 2020-21 season into play styles using clusterin
 
 | File | What it is |
 |---|---|
-| `index.html` | The finished report (same as `NBA-Style-of-Play-Project 2.html`) |
+| `index.html` | The finished report |
 | `NBA Style of Play Project.Rmd` | R Markdown source |
 | `NBA Teams' Style of Play.pptx` | Presentation slides |
 
